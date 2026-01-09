@@ -116,4 +116,3 @@ Disk stabbing: Given n disks in 2D, preprocess to answer "which disks contain po
 
 ---
 
-Made with Claude Code 🤖
