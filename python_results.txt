@@ -1,0 +1,19 @@
+
+====================================================================================================
+PYTHON STRESS TESTS - Loading test data...
+====================================================================================================
+
+Running 15 stress tests...
+
+Traceback (most recent call last):
+  File "/Users/robertmorelli/Documents/personal-repos/disk-tree/stress_test_python.py", line 174, in <module>
+    main()
+  File "/Users/robertmorelli/Documents/personal-repos/disk-tree/stress_test_python.py", line 142, in main
+    result = run_test_case(test_data, verify=verify)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/robertmorelli/Documents/personal-repos/disk-tree/stress_test_python.py", line 35, in run_test_case
+    circles = [
+  File "/Users/robertmorelli/Documents/personal-repos/disk-tree/stress_test_python.py", line 36, in <listcomp>
+    Circle(c['cx'], c['cy'], c['r'])
+    ^^^^^^
+NameError: name 'Circle' is not defined

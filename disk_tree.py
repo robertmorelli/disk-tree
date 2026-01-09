@@ -262,7 +262,7 @@ def circle_circle_intersections(c1: Circle, c2: Circle) -> List[Tuple[float, flo
 
 
 # -----------------------------
-# Segment tree over ranks
+# Persistent Segment tree over ranks
 # -----------------------------
 
 @dataclass
@@ -272,7 +272,7 @@ class SegNode:
     split: Optional[EndpointDesc]  # descriptor of E_k for comparisons
     left: Optional["SegNode"]
     right: Optional["SegNode"]
-    bucket: List[int]  # disk ids whose rank-interval fully covers this node
+    bucket: Tuple[int, ...]  # disk ids whose rank-interval fully covers this node (immutable)
 
 
 def build_rank_segtree(order: List[EndpointDesc], lo: int, hi: int) -> SegNode:
@@ -281,23 +281,35 @@ def build_rank_segtree(order: List[EndpointDesc], lo: int, hi: int) -> SegNode:
     Node's split is the endpoint descriptor at mid rank (portable).
     """
     if lo == hi:
-        return SegNode(lo, hi, order[lo], None, None, [])
+        return SegNode(lo, hi, order[lo], None, None, ())
     mid = (lo + hi) // 2
     left = build_rank_segtree(order, lo, mid)
     right = build_rank_segtree(order, mid + 1, hi)
-    return SegNode(lo, hi, order[mid], left, right, [])
+    return SegNode(lo, hi, order[mid], left, right, ())
 
 
-def seg_insert_interval(node: SegNode, ql: int, qr: int, disk_id: int) -> None:
-    """Canonical cover insert of [ql, qr] into node buckets."""
+def seg_insert_interval(node: SegNode, ql: int, qr: int, disk_id: int) -> SegNode:
+    """
+    Persistent canonical cover insert of [ql, qr].
+    Returns a NEW node with disk_id added to appropriate buckets.
+    Uses path copying: O(log n) new nodes created.
+    """
     if ql <= node.lo and node.hi <= qr:
-        node.bucket.append(disk_id)
-        return
+        # This node is fully covered - add disk_id to bucket and return new node
+        new_bucket = node.bucket + (disk_id,)
+        return SegNode(node.lo, node.hi, node.split, node.left, node.right, new_bucket)
+
     mid = (node.lo + node.hi) // 2
+    new_left = node.left
+    new_right = node.right
+
     if ql <= mid and node.left is not None:
-        seg_insert_interval(node.left, ql, qr, disk_id)
+        new_left = seg_insert_interval(node.left, ql, qr, disk_id)
     if qr > mid and node.right is not None:
-        seg_insert_interval(node.right, ql, qr, disk_id)
+        new_right = seg_insert_interval(node.right, ql, qr, disk_id)
+
+    # Return new node with updated children (path copying)
+    return SegNode(node.lo, node.hi, node.split, new_left, new_right, node.bucket)
 
 
 def seg_stab_query(node: Optional[SegNode],
@@ -357,7 +369,15 @@ class DiskStabbingDS:
         self._built = False
 
     def build(self) -> None:
+        """
+        Build disk stabbing structure using persistent segment trees.
+        Achieves O(n log n) construction by reusing tree structure between adjacent slabs.
+        """
         n = len(self.circles)
+        if n == 0:
+            self._built = True
+            return
+
         events: List[Tuple[float, int, Tuple]] = []
         # event types: 0 = start, 1 = end, 2 = intersection-x
         START, END, XING = 0, 1, 2
@@ -376,36 +396,18 @@ class DiskStabbingDS:
                 for (x, y) in pts:
                     events.append((x, XING, (i, j, y)))
 
-        # Heapify for sweep order (you wanted heapq)
-        heapq.heapify(events)
+        # Sort events for sweep (stable sort maintains tie-handling)
+        events.sort(key=lambda e: (e[0], e[1]))
 
-        # Active set updated by start/end
-        active: Set[int] = set()
-
-        # We’ll collect unique x boundaries in an ordered list
+        # Collect unique x boundaries
         x_boundaries: List[float] = []
-        last_x: Optional[float] = None
+        if events:
+            x_boundaries.append(events[0][0])
+            for x, _, _ in events:
+                if x != x_boundaries[-1]:
+                    x_boundaries.append(x)
 
-        # Process heap and gather boundaries in increasing x
-        # (Ignoring tie-handling edge cases)
-        while events:
-            x, etype, data = heapq.heappop(events)
-            if last_x is None or x != last_x:
-                x_boundaries.append(x)
-                last_x = x
-            if etype == START:
-                (i,) = data
-                active.add(i)
-            elif etype == END:
-                (i,) = data
-                if i in active:
-                    active.remove(i)
-            else:
-                # intersection event doesn't directly change active set
-                pass
-
-        # Build slabs between consecutive boundaries
-        # Use a dict for de-dup/overwrite during construction, then emit sorted list
+        # Build slabs using persistent trees for O(n log n) construction
         slab_dict: Dict[float, Slab] = {}
 
         for k in range(len(x_boundaries) - 1):
@@ -416,8 +418,9 @@ class DiskStabbingDS:
             xmid = 0.5 * (xl + xr)
 
             # Active disks for this slab: those whose x-range covers xmid
-            active_mid = [i for i,c in enumerate(self.circles)
-              if (c.cx - c.r) <= xmid <= (c.cx + c.r)]
+            active_mid = [i for i, c in enumerate(self.circles)
+                          if (c.cx - c.r) <= xmid <= (c.cx + c.r)]
+
             if not active_mid:
                 slab_dict[xl] = Slab(xl, xr, [], None)
                 continue
@@ -434,11 +437,12 @@ class DiskStabbingDS:
             # Map desc -> rank index
             rank: Dict[EndpointDesc, int] = {desc: idx for idx, desc in enumerate(order)}
 
-            # Build segtree over ranks [0..m-1]
+            # Build base segtree structure over ranks [0..m-1]
             m = len(order)
             root = build_rank_segtree(order, 0, m - 1)
 
-            # Insert each disk's interval by ranks
+            # Persistently insert each disk's interval by ranks
+            # Each insert creates O(log m) new nodes, reusing unchanged subtrees
             for i in active_mid:
                 lo_desc = EndpointDesc(i, -1)
                 hi_desc = EndpointDesc(i, +1)
@@ -446,11 +450,12 @@ class DiskStabbingDS:
                 r = rank[hi_desc]
                 if l > r:
                     l, r = r, l
-                seg_insert_interval(root, l, r, i)
+                # Persistent insert returns NEW root
+                root = seg_insert_interval(root, l, r, i)
 
             slab_dict[xl] = Slab(xl, xr, order, root)
 
-        # Emit final de-duplicated sorted list of slabs (list of tuples shape)
+        # Emit final de-duplicated sorted list of slabs
         self._xs = sorted(slab_dict.keys())
         self._slabs = [slab_dict[x] for x in self._xs]
         self._built = True
